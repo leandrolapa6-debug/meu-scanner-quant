@@ -6,7 +6,6 @@ import yfinance as yf
 import requests
 import pytz
 from datetime import datetime
-from streamlit_autorefresh import st_autorefresh
 
 # 1. CONFIGURAÇÃO DA PÁGINA STREAMLIT
 st.set_page_config(
@@ -15,9 +14,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
-
-# Atualização em tempo real nativa (Atualiza a cada 10 segundos em segundo plano de forma fluida)
-st_autorefresh(interval=10000, key="datarefresh")
 
 # Estilização CSS Dark de Alta Performance
 st.markdown("""
@@ -68,7 +64,7 @@ def obter_exchange():
 
 exchange = obter_exchange()
 
-# Cache de segurança de dados lentos (Evita BAN)
+# Cache de segurança de dados lentos para evitar bloqueio (BAN) de IPs
 @st.cache_data(ttl=300)
 def obter_dados_macro():
     fng = 50
@@ -201,98 +197,109 @@ def processar_estrategia(simbolo, fng, dxy, modalidade, df_w, df_d):
     except: return {}, False
 
 # =========================================================
-# 🖥️ CORE ENGINE
+# 🖥️ CONTAINER NATIVO AUTO-ATUALIZÁVEL ("ONLINE")
 # =========================================================
-fng, dxy = obter_dados_macro()
-hora_atual = datetime.now(fuso_br).strftime("%H:%M:%S")
+# Executa esta função nativamente a cada 15 segundos em background
+@st.fragment(run_every=15)
+def renderizar_painel_online():
+    fng, dxy = obter_dados_macro()
+    hora_atual = datetime.now(fuso_br).strftime("%H:%M:%S")
 
-st.markdown(f"""
-    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #2a2e39; padding-bottom: 8px; margin-bottom: 15px;">
-        <div><h1 style="color: #f3ba2f; margin: 0; font-size: 18px;">⚡ QUANT CORE SYSTEM (V5.2)</h1></div>
-        <div><span style="background-color: #2a2e39; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; color: white;">🔴 AO VIVO • {hora_atual}</span></div>
-    </div>
-""", unsafe_allow_html=True)
-
-list_day, list_swing = [], []
-dados_solana_atualizados = None
-
-# Loop de processamento de rede leve
-for ativo in ATIVOS_SCANNER:
-    try:
-        df_w, df_d = obter_dados_historicos(ativo)
-        if df_w.empty or df_d.empty: continue
-        
-        op_d, ok_d = processar_estrategia(ativo, fng, dxy, "DAY_TRADE", df_w, df_d)
-        op_s, ok_s = processar_estrategia(ativo, fng, dxy, "SWING", df_w, df_d)
-        
-        if ok_d: list_day.append(op_d)
-        if ok_s: list_swing.append(op_s)
-        if ativo == 'SOL/USDT' and ok_d: 
-            dados_solana_atualizados = op_d
-    except: continue
-
-# Limita estritamente ao Top 5 de maior probabilidade
-top_day = sorted(list_day, key=lambda x: x['prob_num'], reverse=True)[:5]
-top_swing = sorted(list_swing, key=lambda x: x['prob_num'], reverse=True)[:5]
-
-df_day_display = pd.DataFrame(top_day).drop(columns=['prob_num', 'dados_brutos'], errors='ignore') if top_day else pd.DataFrame()
-df_swing_display = pd.DataFrame(top_swing).drop(columns=['prob_num', 'dados_brutos'], errors='ignore') if top_swing else pd.DataFrame()
-
-# RENDERIZAÇÃO DAS ABAS INTERATIVAS
-aba_scanner, aba_solana = st.tabs(["📊 SCANNER COPIAR & COLAR", "🔥 MONITOR SOLANA DETALHADO"])
-
-with aba_scanner:
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("<h2 style='color:#2962ff; font-size:13px; border-left:3px solid #2962ff; padding-left:5px; margin-bottom:10px;'>🏆 SWING TRADE (TOP 5 MÉDIO PRAZO)</h2>", unsafe_allow_html=True)
-        if not df_swing_display.empty:
-            st.dataframe(df_swing_display, use_container_width=True, hide_index=True)
-        else:
-            st.warning("Carregando Top 5 Swing...")
-            
-    with c2:
-        st.markdown("<h2 style='color:#e5a93c; font-size:13px; border-left:3px solid #e5a93c; padding-left:5px; margin-bottom:10px;'>⚡ DAY TRADE (TOP 5 CURTO PRAZO)</h2>", unsafe_allow_html=True)
-        if not df_day_display.empty:
-            st.dataframe(df_day_display, use_container_width=True, hide_index=True)
-        else:
-            st.warning("Carregando Top 5 Day Trade...")
-
-with aba_solana:
-    st.markdown("<h3 style='font-size:14px; margin-bottom:10px;'>🔥 CENTRAL DE RASTREAMENTO: OPERAÇÃO ATIVA SOLANA</h3>", unsafe_allow_html=True)
-    
-    if dados_solana_atualizados:
-        preco_mercado = float(dados_solana_atualizados['PREÇO'].replace('$', '').replace(',', ''))
-        
-        # Cálculo de Lucro e Perda (P&L) Realizado em Tempo Real com Alavancagem
-        variacao_pct = ((preco_mercado - SOL_ENTRADA) / SOL_ENTRADA) * 100
-        pnl_real = variacao_pct * SOL_ALAVANCAGEM
-        cor_pnl = "#089981" if pnl_real >= 0 else "#f23645"
-        sinal_pnl = "+" if pnl_real >= 0 else ""
-        
-        # Grid com dados de mercado e do nosso investimento ativo lado a lado
-        m1, m2, m3, m4 = st.columns(4)
-        with m1: 
-            st.markdown(f"<div class='metric-card'><span style='color:#787b86; font-size:11px;'>PREÇO DE ENTRADA</span><br><b style='font-size:18px; color:white;'>${SOL_ENTRADA:.2f}</b></div>", unsafe_allow_html=True)
-        with m2: 
-            st.markdown(f"<div class='metric-card'><span style='color:#787b86; font-size:11px;'>PREÇO DE MERCADO</span><br><b style='font-size:18px; color:#f3ba2f;'>${preco_mercado:.4f}</b></div>", unsafe_allow_html=True)
-        with m3: 
-            st.markdown(f"<div class='metric-card'><span style='color:#787b86; font-size:11px;'>P&L ATUAL ALAVANCADO ({SOL_ALAVANCAGEM}x)</span><br><b style='font-size:18px; color:{cor_pnl};'>{sinal_pnl}{pnl_real:.2f}%</b></div>", unsafe_allow_html=True)
-        with m4: 
-            st.markdown(f"<div class='metric-card'><span style='color:#787b86; font-size:11px;'>ALVO / STOP DEFINIDOS</span><br><b style='font-size:15px; color:white;'>🎯 ${SOL_ALVO_REAL:.2f} | 🛡️ ${SOL_STOP_REAL:.2f}</b></div>", unsafe_allow_html=True)
-        
-        # Estatísticas técnicas e fluxo da SOL
-        ds = dados_solana_atualizados['dados_brutos']
-        st.markdown(f"""
-        <div style="background-color: #1e222d; border-radius: 6px; border: 1px solid #2a2e39; padding: 12px; margin-top:15px;">
-            <span style="color: white; font-size: 12px; font-weight:bold;">📋 METRICAS DE FLUXO E SUPORTE DINÂMICOS</span><br>
-            <span style="color: #b2b5be; font-size: 11px; line-height: 1.6;">
-            • <b>RSI do Período:</b> {ds['rsi']:.2f} ({"Sobrevendido 🟢" if ds['rsi'] < 30 else "Sobrecomprado 🔴" if ds['rsi'] > 70 else "Neutro ⚪"})<br>
-            • <b>Tendência Macro (1D):</b> {"Compradora (Acima da EMA 50) 🟢" if ds['tendencia_alta'] else "Vendedora (Abaixo da EMA 50) 🔴"}<br>
-            • <b>Zona Fibonacci 0.618:</b> Preço está {"Acima da Região Compradora 🟢" if preco_mercado >= ds['fib_618'] else "Abaixo da Região Compradora 🔴"} de <b>${ds['fib_618']:,.2f}</b><br>
-            • <b>Divergência de Força:</b> {ds['divergencia']}<br>
-            • <b>Volume Institutional (VSA) / Absorção:</b> {"Sinal Crítico de Absorção de Venda! 🟢" if ds['absorcao'] else "Fluxo normal de ordens ⚪"}
-            </span>
+    st.markdown(f"""
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #2a2e39; padding-bottom: 8px; margin-bottom: 15px;">
+            <div><h1 style="color: #f3ba2f; margin: 0; font-size: 18px;">⚡ QUANT CORE SYSTEM (V5.3)</h1></div>
+            <div><span style="background-color: #2a2e39; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; color: white;">🟢 ONLINE • {hora_atual}</span></div>
         </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.info("Sincronizando dados de fluxo da Solana em tempo real...")
+    """, unsafe_allow_html=True)
+
+    list_day, list_swing = [], []
+    dados_solana_atualizados = None
+
+    for ativo in ATIVOS_SCANNER:
+        try:
+            df_w, df_d = obter_dados_historicos(ativo)
+            if df_w.empty or df_d.empty: continue
+            
+            op_d, ok_d = processar_estrategia(ativo, fng, dxy, "DAY_TRADE", df_w, df_d)
+            op_s, ok_s = processar_estrategia(ativo, fng, dxy, "SWING", df_w, df_d)
+            
+            if ok_d: list_day.append(op_d)
+            if ok_s: list_swing.append(op_s)
+            if ativo == 'SOL/USDT' and ok_d: 
+                dados_solana_atualizados = op_d
+        except: continue
+
+    # Classificação e Filtro rígido do Top 5 por probabilidade
+    top_day = sorted(list_day, key=lambda x: x['prob_num'], reverse=True)[:5]
+    top_swing = sorted(list_swing, key=lambda x: x['prob_num'], reverse=True)[:5]
+
+    df_day_display = pd.DataFrame(top_day).drop(columns=['prob_num', 'dados_brutos'], errors='ignore') if top_day else pd.DataFrame()
+    df_swing_display = pd.DataFrame(top_swing).drop(columns=['prob_num', 'dados_brutos'], errors='ignore') if top_swing else pd.DataFrame()
+
+    # ABAS INTERATIVAS
+    aba_scanner, aba_solana = st.tabs(["📊 SCANNER COPIAR & COLAR", "🔥 MONITOR SOLANA DETALHADO"])
+
+    with aba_scanner:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("<h2 style='color:#2962ff; font-size:13px; border-left:3px solid #2962ff; padding-left:5px; margin-bottom:10px;'>🏆 SWING TRADE (TOP 5 MÉDIO PRAZO)</h2>", unsafe_allow_html=True)
+            if not df_swing_display.empty:
+                st.dataframe(df_swing_display, use_container_width=True, hide_index=True)
+            else:
+                st.warning("A carregar...")
+                
+        with c2:
+            st.markdown("<h2 style='color:#e5a93c; font-size:13px; border-left:3px solid #e5a93c; padding-left:5px; margin-bottom:10px;'>⚡ DAY TRADE (TOP 5 CURTO PRAZO)</h2>", unsafe_allow_html=True)
+            if not df_day_display.empty:
+                st.dataframe(df_day_display, use_container_width=True, hide_index=True)
+            else:
+                st.warning("A carregar...")
+
+    with aba_solana:
+        st.markdown("<h3 style='font-size:14px; margin-bottom:10px;'>🔥 CENTRAL DE RASTREAMENTO: OPERAÇÃO ATIVA SOLANA</h3>", unsafe_allow_html=True)
+        
+        if dados_solana_atualizados:
+            preco_mercado = float(dados_solana_atualizados['PREÇO'].replace('$', '').replace(',', ''))
+            
+            # Cálculo de Lucro e Perda (P&L) Realizado com Alavancagem do nosso Trade Ativo
+            variacao_pct = ((preco_mercado - SOL_ENTRADA) / SOL_ENTRADA) * 100
+            pnl_real = variacao_pct * SOL_ALAVANCAGEM
+            cor_pnl = "#089981" if pnl_real >= 0 else "#f23645"
+            sinal_pnl = "+" if pnl_real >= 0 else ""
+            
+            # Grid do Investimento
+            m1, m2, m3, m4 = st.columns(4)
+            with m1: 
+                st.markdown(f"<div class='metric-card'><span style='color:#787b86; font-size:11px;'>PREÇO DE ENTRADA</span><br><b style='font-size:18px; color:white;'>${SOL_ENTRADA:.2f}</b></div>", unsafe_allow_html=True)
+            with m2: 
+                st.markdown(f"<div class='metric-card'><span style='color:#787b86; font-size:11px;'>PREÇO DE MERCADO</span><br><b style='font-size:18px; color:#f3ba2f;'>${preco_mercado:.4f}</b></div>", unsafe_allow_html=True)
+            with m3: 
+                st.markdown(f"<div class='metric-card'><span style='color:#787b86; font-size:11px;'>P&L ATUAL ({SOL_ALAVANCAGEM}x)</span><br><b style='font-size:18px; color:{cor_pnl};'>{sinal_pnl}{pnl_real:.2f}%</b></div>", unsafe_allow_html=True)
+            with m4: 
+                st.markdown(f"<div class='metric-card'><span style='color:#787b86; font-size:11px;'>ALVO / STOP DEFINIDOS</span><br><b style='font-size:15px; color:white;'>🎯 ${SOL_ALVO_REAL:.2f} | 🛡️ ${SOL_STOP_REAL:.2f}</b></div>", unsafe_allow_html=True)
+            
+            # Estatísticas técnicas e fluxo da SOL
+            ds = dados_solana_atualizados['dados_brutos']
+            st.markdown(f"""
+            <div style="background-color: #1e222d; border-radius: 6px; border: 1px solid #2a2e39; padding: 12px; margin-top:15px;">
+                <span style="color: white; font-size: 12px; font-weight:bold;">📋 METRICAS DE FLUXO E SUPORTE DINÂMICOS</span><br>
+                <span style="color: #b2b5be; font-size: 11px; line-height: 1.6;">
+                • <b>RSI do Período:</b> {ds['rsi']:.2f} ({"Sobrevendido 🟢" if ds['rsi'] < 30 else "Sobrecomprado 🔴" if ds['rsi'] > 70 else "Neutro ⚪"})<br>
+                • <b>Tendência Macro (1D):</b> {"Compradora (Acima da EMA 50) 🟢" if ds['tendencia_alta'] else "Vendedora (Abaixo da EMA 50) 🔴"}<br>
+                • <b>Zona Fibonacci 0.618:</b> Preço está {"Acima da Região Compradora 🟢" if preco_mercado >= ds['fib_618'] else "Abaixo da Região Compradora 🔴"} de <b>${ds['fib_618']:,.2f}</b><br>
+                • <b>Divergência de Força:</b> {ds['divergencia']}<br>
+                • <b>Volume Institutional (VSA) / Absorção:</b> {"Sinal Crítico de Absorção de Venda! 🟢" if ds['absorcao'] else "Fluxo normal de ordens ⚪"}
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("Sincronizando dados de fluxo da Solana em tempo real...")
+
+    st.markdown("""
+        <div style="font-size: 10px; color: #787b86; text-align: center; border-top: 1px solid #2a2e39; padding-top: 15px; margin-top: 20px;">
+            💡 *Atualizações em tempo real a cada 15 segundos sem recarregar a página inteira.*
+        </div>
+    """, unsafe_allow_html=True)
+
+# Executa a renderização dinâmica
+renderizar_painel_online()
